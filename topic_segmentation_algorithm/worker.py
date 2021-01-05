@@ -26,6 +26,8 @@ import logging
 import ast
 import threading
 import functools
+from files_ms_client import upload, download
+
 
 import nltk
 nltk.download('punkt')
@@ -71,72 +73,6 @@ class Summary:
 
         return s
 
-#
-# if __name__ == '__main__':
-#     stopwords = None
-#     googlenews_model_path = 'document_similarity/data/GoogleNews-vectors-negative300.bin'
-#     stopwords_path = "document_similarity/data/stopwords_en.txt"
-#     docSim = None
-#
-#     try:
-#         root_database = sys.argv[1]
-#     except IndexError:
-#         print('Please, provide the path from the videolecture to be processed ')
-#         print('Usage:\n python3 summary path_from_the_video_lecture')
-#         sys.exit(0)
-#
-#
-#     '''loads google word embeddings model'''
-#     with open(stopwords_path, 'r') as fh:
-#         stopwords = fh.read().split(",")
-#     model = KeyedVectors.load_word2vec_format(googlenews_model_path, binary=True, limit=1000000)
-#     docSim = DocSim.DocSim(model, stopwords=stopwords)
-#
-#
-#     # saves the random seed in the seeds.txt file
-#     seed  =  random.randrange(sys.maxsize)
-#     seed_file = open("seeds.txt", 'a')
-#     seed_file.write(str(seed) + '\n')
-#     seed_file.close()
-#     random.seed(seed)
-#
-#
-#     start_time = time.time()
-#
-#     print(root_database)
-#     summary = Summary(root_database)
-#     ocr_on = False
-#     pauses, times, times_end = summary.extractPauseDuration()
-#     duration = [times_end[i] - times[i] for i in range(len(times))]
-#     summary.video_length = np.sum(duration)
-#     chunks = []
-#     summary.n_chunks = len(times)
-#     '''create the audio chunks structure'''
-#     for i in range(summary.n_chunks):
-#         chunks.append(summary.createShots(i, pauses[i], ocr_on, times[i], times_end[i], docSim, summary.video_path + "prosodic.json"))
-#
-#     old_chunks = chunks
-#     chunks = [s for s in chunks if s.valid_vector]
-#
-#     summary.chunks = chunks
-#     summary.n_chunks = len(chunks)
-#
-#     boundaries = []
-#     if summary.n_chunks < 2:
-#         boundaries = [0]
-#     else:
-#         '''calls the genetic algorithm'''
-#         ga = GA.GeneticAlgorithm(population_size=100, constructiveHeuristic_percent=0.3, mutation_rate=0.05,
-#                                  cross_over_rate=0.4, docSim=docSim, shots=summary.chunks,
-#                                  n_chunks=summary.n_chunks, generations=500, local_search_percent=0.3,
-#                                  video_length=summary.video_length, stopwords=stopwords, ocr_on=ocr_on)
-#         boundaries = ga.run()
-#
-#     '''print the indexes of the points that are topic boundaries'''
-#     print(boundaries)
-#
-#
-
 LOG_FORMAT = ('%(levelname) -10s %(asctime)s %(name) -30s %(funcName) '
               '-35s %(lineno) -5d: %(message)s')
 LOGGER = logging.getLogger(__name__)
@@ -154,11 +90,13 @@ def callback(channel, method, properties, body, args):
 def do_work(connection, channel, delivery_tag, body):
     try:
         print(" [x] Received %r" % body, flush=True)
-        oid = json.loads(body)['oid']
-        project_id = json.loads(body)['project_id']
+        args = json.loads(body) 
+        oid = args['oid']
+        project_id = args['project_id']
         conn = Connection()
         # file = conn.get_file(oid)
-        file = conn.get_doc_mongo(file_oid=oid)
+        # file = conn.get_doc_mongo(file_oid=oid)
+        file = download(args['file'], buffer=True)
 
         result = ast.literal_eval(file.decode('utf-8'))
         #print(result.keys(), flush=True)
@@ -189,6 +127,8 @@ def do_work(connection, channel, delivery_tag, body):
         topics = {}
         topics["topics"] = boundaries
         payload = bytes(str(topics), encoding='utf-8')
+
+        uploaded = upload(payload, buffer=True, mime='text/json')
 
         file_oid = conn.insert_doc_mongo(payload)
         conn = Connection()

@@ -7,6 +7,7 @@ import json
 import logging
 from lib.extract_audio import extract
 import threading
+from files_ms_client import upload, download
 
 
 LOG_FORMAT = ('%(levelname) -10s %(asctime)s %(name) -30s %(funcName) '
@@ -18,33 +19,38 @@ def callback(ch, method, properties, body):
 
     try:
         print(" [x] Received %r" % body, flush=True)
-        oid = json.loads(body)['oid']
-        project_id = json.loads(body)['project_id']
+        args = json.loads(body)
+        oid = args['oid']
+        project_id = args['project_id']
         print(str(oid) + '!!!???', flush=True)
         print(str(project_id) + '!!!???', flush=True)
 
-        conn = Connection()
-        file = conn.get_doc_mongo(file_oid=oid)
+        # conn = Connection()
+        # file = conn.get_doc_mongo(file_oid=oid)
+        file = download(args['file'], buffer=True)
 
         data = extract(file)  # calls the audio extract algorithm
         # print(data,  flush=True)
 
         conn = Connection()
         try:
+            uploaded = upload(data, buffer=True, mime='audio/wav')
+
             file_oid = conn.insert_doc_mongo(data)
 
             conn.insert_jobs('audio_extractor', 'done', file_oid, project_id)
-            message = {'type': 'vad', 'status': 'new', 'oid': file_oid, 'project_id': project_id}
-            connection = pika.BlockingConnection(pika.ConnectionParameters(host=os.environ['QUEUE_SERVER']))
+            message = {'type': 'vad', 'status': 'new',
+                       'oid': file_oid, 'project_id': project_id, 'file': uploaded['name']}
+            connection = pika.BlockingConnection(
+                pika.ConnectionParameters(host=os.environ['QUEUE_SERVER']))
             channel = connection.channel()
 
             channel.queue_declare(queue='vad', durable=True)
-            channel.basic_publish(exchange='', routing_key='vad', body=json.dumps(message))
-
+            channel.basic_publish(
+                exchange='', routing_key='vad', body=json.dumps(message))
 
         except Exception as e:
             print(e, flush=True)
-
 
     except Exception as e:
         print(e, flush=True)
@@ -69,9 +75,11 @@ def consume():
     channel.queue_declare(queue='audio_extractor', durable=True)
     print(' [*] Waiting for messages. To exit press CTRL+C')
     channel.basic_qos(prefetch_count=1)
-    channel.basic_consume(queue='audio_extractor', on_message_callback=callback)
+    channel.basic_consume(queue='audio_extractor',
+                          on_message_callback=callback)
 
     channel.start_consuming()
+
 
 consume()
 '''

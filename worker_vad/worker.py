@@ -6,6 +6,7 @@ import multiprocessing
 import json
 import logging
 from vad.main import main
+from files_ms_client import download, upload
 LOG_FORMAT = ('%(levelname) -10s %(asctime)s %(name) -30s %(funcName) '
               '-35s %(lineno) -5d: %(message)s')
 LOGGER = logging.getLogger(__name__)
@@ -14,47 +15,56 @@ LOGGER = logging.getLogger(__name__)
 def callback(ch, method, properties, body):
     try:
         print(" [x] Received %r" % body, flush=True)
-        oid = json.loads(body)['oid']
-        project_id = json.loads(body)['project_id']
-        conn = Connection()
-        file = conn.get_doc_mongo(file_oid=oid)
+        args = json.loads(body)
+        oid = args['oid']
+        project_id = args['project_id']
+        # conn = Connection()
+        # file = conn.get_doc_mongo(file_oid=oid)
+
+        file = download(args['file'], buffer=True)
+
         try:
 
             data = main(file)  # calls the VAD algorithm
             # print(data(,  flush=True)
 
         except Exception as e:
-            print('aaaaaaaaaaa', flush=True)
+            # print('aaaaaaaaaaa', flush=True)
             logging.debug('Connection Error %s' % e)
 
         conn = Connection()
         try:
 
+            uploaded = upload(data, buffer=True, mime='text/plain')
+
             file_oid = conn.insert_doc_mongo(data)
             conn.insert_jobs('vad', 'done', file_oid, project_id)
 
-            ## Posts low level features jobs
-            message = {'type': 'low_level_features', 'status': 'new', 'oid': file_oid, 'project_id': project_id }
-            connection = pika.BlockingConnection(pika.ConnectionParameters(host=os.environ['QUEUE_SERVER']))
+            # Posts low level features jobs
+            message = {'type': 'low_level_features', 'status': 'new',
+                       'oid': file_oid, 'project_id': project_id, 'file': uploaded['name']}
+            connection = pika.BlockingConnection(
+                pika.ConnectionParameters(host=os.environ['QUEUE_SERVER']))
             channel = connection.channel()
 
             channel.queue_declare(queue='low_level_features', durable=True)
-            channel.basic_publish(exchange='', routing_key='low_level_features', body=json.dumps(message))
+            channel.basic_publish(
+                exchange='', routing_key='low_level_features', body=json.dumps(message))
 
-            ## Posts asr jobs
+            # Posts asr jobs
 
             channel_asr = connection.channel()
-            message_asr = {'type': 'asr', 'status': 'new', 'oid': file_oid, 'project_id': project_id}
+            message_asr = {'type': 'asr', 'status': 'new',
+                           'oid': file_oid, 'project_id': project_id, 'file': uploaded['name']}
 
             channel_asr.queue_declare(queue='asr', durable=True)
-            channel_asr.basic_publish(exchange='', routing_key='asr', body=json.dumps(message_asr))
-
+            channel_asr.basic_publish(
+                exchange='', routing_key='asr', body=json.dumps(message_asr))
 
         except Exception as e:
             print(e, flush=True)
 
             LOGGER.info('Error Inserting % ' % e)
-
 
     except Exception as e:
         print(e, flush=True)
@@ -84,6 +94,7 @@ def consume():
     channel.basic_consume(queue='vad', on_message_callback=callback)
 
     channel.start_consuming()
+
 
 consume()
 '''

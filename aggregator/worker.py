@@ -7,6 +7,8 @@ import json
 import logging
 import threading
 import functools
+from files_ms_client import upload, download
+import persist
 
 LOG_FORMAT = ('%(levelname) -10s %(asctime)s %(name) -30s %(funcName) '
               '-35s %(lineno) -5d: %(message)s')
@@ -35,43 +37,56 @@ def aggregate_flow(project_id):
     print(res, flush=True)
     return res
 
-def do_work(connection, channel, delivery_tag, body):
 
+def new_aggregate_flow(data, channel):
+    current = persist.load(data['project_id'])
+    current[channel] = data
+    persist.write(data['project_id'], current)
+    print("PERSIST: ", current)
+    if(len(current.keys()) < 2):
+        return False
+    return current
+    
+def do_work(connection, channel, delivery_tag, body):
     try:
         print(" [x] Received %r" % body, flush=True)
-        oid = json.loads(body)['oid']
-        project_id = json.loads(body)['project_id']
+        args = json.loads(body)
+        oid = args['oid']
+        project_id = args['project_id']
+        print('data: ', args)
         print(str(oid) + '!!!???', flush=True)
         print(str(project_id) + '!!!???', flush=True)
-        flows = aggregate_flow(project_id)
-        if flows:
 
+        flows = new_aggregate_flow(args, args['queue'])
+        if flows:
             data = {}
-            for flow in flows:
-                conn = Connection()
-                file = conn.get_doc_mongo(file_oid=flow[0])
-                data[flow[1]] = file
+            for ch in flows.values():
+                data[ch['queue']] = download(ch['file'], buffer=True)
 
             print(data.keys(), flush=True)
-             # calls the audio extract algorithm
+            # calls the audio extract algorithm
             # print(data,  flush=True)
 
             conn = Connection()
             try:
-                file_oid = conn.insert_doc_mongo(bytes(str(data), encoding='utf-8'))
-
+                payload = bytes(str(data), encoding='utf-8')
+                file_oid = conn.insert_doc_mongo(payload)
                 conn.insert_jobs('aggregator', 'done', file_oid, project_id)
-                message = {'type': 'segmentation', 'status': 'new', 'oid': file_oid, 'project_id': project_id}
-                connection_out = pika.BlockingConnection(pika.ConnectionParameters(host=os.environ['QUEUE_SERVER']))
+                
+                uploaded = upload(payload, buffer=True, mime='text/plain')
+                
+                message = {'type': 'segmentation', 'status': 'new',
+                           'oid': file_oid, 'project_id': project_id, 'file': uploaded['name']}
+                connection_out = pika.BlockingConnection(
+                    pika.ConnectionParameters(host=os.environ['QUEUE_SERVER']))
                 channel2 = connection_out.channel()
 
                 channel2.queue_declare(queue='segmentation', durable=True)
-                channel2.basic_publish(exchange='', routing_key='segmentation', body=json.dumps(message))
-
+                channel2.basic_publish(
+                    exchange='', routing_key='segmentation', body=json.dumps(message))
 
             except Exception as e:
                 print(e, flush=True)
-
 
     except Exception as e:
         print(e, flush=True)
@@ -79,7 +94,6 @@ def do_work(connection, channel, delivery_tag, body):
 
     cb = functools.partial(ack_message, channel, delivery_tag)
     connection.add_callback_threadsafe(cb)
-
 
 def ack_message(channel, delivery_tag):
     """Note that `channel` must be the same pika channel instance via which
@@ -91,8 +105,6 @@ def ack_message(channel, delivery_tag):
         # Channel is already closed, so we can't ACK this message;
         # log and/or do something that makes sense for your app in this case.
         pass
-
-
 
 
 def consume():
@@ -109,14 +121,15 @@ def consume():
 
             pass
 
-
     channel.queue_declare(queue='aggregator', durable=True)
     print(' [*] Waiting for messages. To exit press CTRL+C')
     channel.basic_qos(prefetch_count=1)
 
     threads = []
-    on_message_callback = functools.partial(callback, args=(connection, threads))
-    channel.basic_consume(queue='aggregator', on_message_callback=on_message_callback)
+    on_message_callback = functools.partial(
+        callback, args=(connection, threads))
+    channel.basic_consume(queue='aggregator',
+                          on_message_callback=on_message_callback)
     try:
         channel.start_consuming()
     except KeyboardInterrupt:
@@ -128,8 +141,8 @@ def consume():
 
     connection.close()
 
-consume()
 
+consume()
 
 
 '''

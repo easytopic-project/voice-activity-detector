@@ -9,6 +9,7 @@ import ast
 from extract_prosodic.main import extract
 import threading
 import functools
+from files_ms_client import download, upload
 
 LOG_FORMAT = ('%(levelname) -10s %(asctime)s %(name) -30s %(funcName) '
               '-35s %(lineno) -5d: %(message)s')
@@ -19,7 +20,8 @@ def callback(channel, method, properties, body, args):
 
     (connection, threads) = args
     delivery_tag = method.delivery_tag
-    t = threading.Thread(target=do_work, args=(connection, channel, delivery_tag, body))
+    t = threading.Thread(target=do_work, args=(
+        connection, channel, delivery_tag, body))
     t.start()
     threads.append(t)
 
@@ -27,14 +29,17 @@ def callback(channel, method, properties, body, args):
 def do_work(connection, channel, delivery_tag, body):
     try:
         print(" [x] Received %r" % body, flush=True)
-        oid = json.loads(body)['oid']
-        project_id = json.loads(body)['project_id']
-        conn = Connection()
+        args = json.loads(body)
+        oid = args['oid']
+        project_id = args['project_id']
+
+        # conn = Connection()
         # file = conn.get_file(oid)
-        file = conn.get_doc_mongo(file_oid=oid)
+        # file = conn.get_doc_mongo(file_oid=oid)
+
+        file = download(args['file'], buffer=True)
 
         result = ast.literal_eval(file.decode('utf-8'))
-
 
         timestamps = [0]
         duration = []
@@ -47,29 +52,37 @@ def do_work(connection, channel, delivery_tag, body):
             if count == 0:
                 dict_result[count]['pause'] = float(value['timestamp'])
             else:
-                dict_result[count]['pause'] = float(value['timestamp']) - previous_duration
+                dict_result[count]['pause'] = float(
+                    value['timestamp']) - previous_duration
 
             dict_result[count]['init_time'] = float(value['timestamp'])
-            previous_duration = float(value['timestamp']) + float(value['duration'])
-            dict_result[count]['pitch'], dict_result[count]['volume'] = extract(value['bytes'])
+            previous_duration = float(
+                value['timestamp']) + float(value['duration'])
+            dict_result[count]['pitch'], dict_result[count]['volume'] = extract(
+                value['bytes'])
             count += 1
 
         payload = bytes(str(dict_result), encoding='utf-8')
-        conn = Connection()
 
+        uploaded = upload(payload, buffer=True, mime='text/plain')
+
+        conn = Connection()
         #  inserts the result of processing in database
         file_oid = conn.insert_doc_mongo(payload)
-        conn.insert_jobs(type='low_level_features', status='done', file=file_oid, project_id=project_id)
+        conn.insert_jobs(type='low_level_features', status='done',
+                         file=file_oid, project_id=project_id)
 
-        message = {'type': 'aggregator', 'status': 'new', 'oid': file_oid, 'project_id': project_id}
+        message = {'type': 'aggregator', 'status': 'new', 'oid': file_oid,
+                   'project_id': project_id, 'file': uploaded['name'], 'queue': 'low_level_features'}
 
         #  post a message on topic_segmentation queue
-        connection_out = pika.BlockingConnection(pika.ConnectionParameters(host=os.environ['QUEUE_SERVER']))
+        connection_out = pika.BlockingConnection(
+            pika.ConnectionParameters(host=os.environ['QUEUE_SERVER']))
         channel2 = connection_out.channel()
 
         channel2.queue_declare(queue='aggregator', durable=True)
-        channel2.basic_publish(exchange='', routing_key='aggregator', body=json.dumps(message))
-
+        channel2.basic_publish(
+            exchange='', routing_key='aggregator', body=json.dumps(message))
 
     except Exception as e:
         # print(e, flush=True)
@@ -77,6 +90,7 @@ def do_work(connection, channel, delivery_tag, body):
     print(" [x] Done", flush=True)
     cb = functools.partial(ack_message, channel, delivery_tag)
     connection.add_callback_threadsafe(cb)
+
 
 def ack_message(channel, delivery_tag):
     """Note that `channel` must be the same pika channel instance via which
@@ -88,7 +102,6 @@ def ack_message(channel, delivery_tag):
         # Channel is already closed, so we can't ACK this message;
         # log and/or do something that makes sense for your app in this case.
         pass
-
 
 
 
@@ -106,14 +119,15 @@ def consume():
 
             pass
 
-
     channel.queue_declare(queue='low_level_features', durable=True)
     print(' [*] Waiting for messages. To exit press CTRL+C')
     channel.basic_qos(prefetch_count=1)
 
     threads = []
-    on_message_callback = functools.partial(callback, args=(connection, threads))
-    channel.basic_consume(queue='low_level_features', on_message_callback=on_message_callback)
+    on_message_callback = functools.partial(
+        callback, args=(connection, threads))
+    channel.basic_consume(queue='low_level_features',
+                          on_message_callback=on_message_callback)
     try:
         channel.start_consuming()
     except KeyboardInterrupt:
@@ -124,6 +138,7 @@ def consume():
         thread.join()
 
     connection.close()
+
 
 consume()
 
