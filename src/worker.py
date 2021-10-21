@@ -1,74 +1,48 @@
 import pika
 import time
-from DAO.connection import Connection
 import os
-import multiprocessing
 import json
 import logging
 from vad.main import main
 from files_ms_client import download, upload
+
 LOG_FORMAT = ('%(levelname) -10s %(asctime)s %(name) -30s %(funcName) '
               '-35s %(lineno) -5d: %(message)s')
 LOGGER = logging.getLogger(__name__)
 
+FILES_SERVER = os.environ.get("FILES_SERVER", "localhost:3001") 
+QUEUE_SERVER_HOST, QUEUE_SERVER_PORT = os.environ.get("QUEUE_SERVER", "localhost:5672").split(":")
+Q_IN = os.environ.get("INPUT_QUEUE_NAME", "vad_in")
+Q_OUT = os.environ.get("OUTPUT_QUEUE_NAME", "vad_out")
 
 def callback(ch, method, properties, body):
     try:
         print(" [x] Received %r" % body, flush=True)
         args = json.loads(body)
-        oid = args['oid']
-        project_id = args['project_id']
-        # conn = Connection()
-        # file = conn.get_doc_mongo(file_oid=oid)
-
-        file = download(args['file'], buffer=True)
-
+        file = download(args['file']['name'], url="http://" + FILES_SERVER, buffer=True)
+        data = main(file)  # calls the VAD algorithm
         try:
-
-            data = main(file)  # calls the VAD algorithm
-            # print(data(,  flush=True)
-
-        except Exception as e:
-            # print('aaaaaaaaaaa', flush=True)
-            logging.debug('Connection Error %s' % e)
-
-        conn = Connection()
-        try:
-
-            uploaded = upload(data, buffer=True, mime='text/plain')
-
-            file_oid = conn.insert_doc_mongo(data)
-            conn.insert_jobs('vad', 'done', file_oid, project_id)
+            uploaded = upload(data, url="http://" + FILES_SERVER, buffer=True, mime='text/plain')
 
             # Posts low level features jobs
-            message = {'type': 'low_level_features', 'status': 'new',
-                       'oid': file_oid, 'project_id': project_id, 'file': uploaded['name']}
+            message = {
+                **args,
+                'vad-output': uploaded
+                }
             connection = pika.BlockingConnection(
-                pika.ConnectionParameters(host=os.environ['QUEUE_SERVER']))
+                pika.ConnectionParameters(host=QUEUE_SERVER_HOST, port=QUEUE_SERVER_PORT))
             channel = connection.channel()
 
-            channel.queue_declare(queue='low_level_features', durable=True)
+            channel.queue_declare(queue=Q_OUT, durable=True)
             channel.basic_publish(
-                exchange='', routing_key='low_level_features', body=json.dumps(message))
-
-            # Posts asr jobs
-
-            channel_asr = connection.channel()
-            message_asr = {'type': 'asr', 'status': 'new',
-                           'oid': file_oid, 'project_id': project_id, 'file': uploaded['name']}
-
-            channel_asr.queue_declare(queue='asr', durable=True)
-            channel_asr.basic_publish(
-                exchange='', routing_key='asr', body=json.dumps(message_asr))
-
+                exchange='', routing_key=Q_OUT, body=json.dumps(message))
+                
         except Exception as e:
             print(e, flush=True)
-
             LOGGER.info('Error Inserting % ' % e)
 
     except Exception as e:
         print(e, flush=True)
-
         logging.info('error')
 
     print(" [x] Done", flush=True)
@@ -81,33 +55,20 @@ def consume():
     while not success:
         try:
             connection = pika.BlockingConnection(
-                pika.ConnectionParameters(host=os.environ['QUEUE_SERVER']))
+                pika.ConnectionParameters(host=QUEUE_SERVER_HOST, port=QUEUE_SERVER_PORT))
             channel = connection.channel()
             success = True
         except:
             time.sleep(30)
             pass
 
-    channel.queue_declare(queue='vad', durable=True)
-    print(' [*] Waiting for messages. To exit press CTRL+C')
+    channel.queue_declare(queue=Q_IN, durable=True)
+    channel.queue_declare(queue=Q_OUT, durable=True)
+    print(' [*] Waiting for messages. To exit press CTRL+C', flush=True)
     channel.basic_qos(prefetch_count=1)
-    channel.basic_consume(queue='vad', on_message_callback=callback)
+    channel.basic_consume(queue=Q_IN, on_message_callback=callback)
 
     channel.start_consuming()
 
 
 consume()
-'''
-workers = int(os.environ['NUM_WORKERS'])
-pool = multiprocessing.Pool(processes=workers)
-for i in range(0, workers):
-    pool.apply_async(consume)
-
-# Stay alive
-try:
-    while True:
-        continue
-except KeyboardInterrupt:
-    print(' [*] Exiting...')
-    pool.terminate()
-    pool.join()'''

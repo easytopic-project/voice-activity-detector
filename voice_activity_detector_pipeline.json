@@ -1,0 +1,36 @@
+{
+  "version": "1.0",
+  "id": "vad",
+  "name": "Voice Activity Detector",
+  "description": "Voice Activity Detector",
+  "input": [
+    {
+      "id": "audio",
+      "name": "Audio",
+      "description": "Audio on witch the voice activity detector will act on",
+      "type": "file",
+      "required": true,
+      "accept": ["audio/wav"]
+    }
+  ],
+  "output": [
+    {
+      "id": "vad",
+      "from": "vad:vad-output",
+      "type": "file",
+      "name": "Voice Activity Detector Result",
+      "description": "The result of the Voice Activity Detector processing"
+    }
+  ],
+  "jobs": [
+    {
+      "id": "vad",
+      "queues": [
+        {"env": "VAD_INPUT_QUEUE", "default": "vad_in"},
+        {"env": "VAD_OUTPUT_QUEUE", "default": "vad_out"}
+      ],
+      "arguments": {"file": "audio"},
+      "output": ["vad-output"]
+    }
+  ]
+}
